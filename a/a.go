@@ -2,17 +2,28 @@ package main
 
 import (
 	"encoding/json"
-	"io/ioutil"
 	"log"
 	"net/http"
-	"net/url"
 	"text/template"
 
-	"github.com/hashicorp/go-retryablehttp"
+	"github.com/joho/godotenv"
+	"github.com/wesleywillians/go-rabbitmq/queue"
 )
+
+type Order struct {
+	Coupon   string
+	CcNumber string
+}
 
 type Result struct {
 	Status string
+}
+
+func init() {
+	err := godotenv.Load()
+	if err != nil {
+		log.Fatal("Error lading .env")
+	}
 }
 
 func main() {
@@ -27,36 +38,28 @@ func home(w http.ResponseWriter, r *http.Request) {
 }
 
 func process(w http.ResponseWriter, r *http.Request) {
-	result := makeHTTPCall("http://localhost:9091", r.FormValue("coupon"), r.FormValue("cc-number"))
+	coupon := r.PostFormValue("coupon")
+	ccNumber := r.PostFormValue("cc-number")
 
-	t := template.Must(template.ParseFiles("templates/home.html"))
-	t.Execute(w, result)
-}
-
-func makeHTTPCall(urlMicroservice string, coupon string, ccNumber string) Result {
-	values := url.Values{}
-	values.Add("coupon", coupon)
-	values.Add("ccNumber", ccNumber)
-
-	retryClient := retryablehttp.NewClient()
-	retryClient.RetryMax = 5
-
-	res, err := retryClient.PostForm(urlMicroservice, values)
-	if err != nil {
-		result := Result{Status: "Servidor fora do ar *o*"}
-		return result
+	order := Order{
+		Coupon:   coupon,
+		CcNumber: ccNumber,
 	}
 
-	defer res.Body.Close()
-
-	data, err := ioutil.ReadAll(res.Body)
+	jsonOrder, err := json.Marshal(order)
 	if err != nil {
-		log.Fatal("Error processing result")
+		log.Fatal("Error parsnig to json")
 	}
 
-	result := Result{}
+	rabbitMQ := queue.NewRabbitMQ()
+	ch := rabbitMQ.Connect()
+	defer ch.Close()
 
-	json.Unmarshal(data, &result)
+	err = rabbitMQ.Notify(string(jsonOrder), "application/json", "orders_ex", "")
+	if err != nil {
+		log.Fatal("Error sending message to queue")
+	}
 
-	return result
+	t := template.Must(template.ParseFiles("templates/process.html"))
+	t.Execute(w, "")
 }
